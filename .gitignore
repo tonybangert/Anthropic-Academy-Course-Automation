@@ -1,0 +1,5 @@
+playwright_data/
+debug_screenshots/
+.env
+__pycache__/
+*.pyc
