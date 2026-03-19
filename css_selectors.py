@@ -4,18 +4,19 @@ Skilljar's quiz internals are undocumented and may vary, so we use
 candidate lists and discover which selector works at runtime.
 """
 
-# ── Auth ──────────────────────────────────────────────────────────
+# -- Auth -----------------------------------------------------------------
 LOGGED_IN_INDICATORS = [
-    ".sj-user-menu",
-    "[data-testid='user-menu']",
-    ".user-avatar",
-    ".sj-header-user",
+    "a[href*='logout']",
+    ".signout-link",
+    "[class*='profile-dropdown']",
+    "[class*='account-nav']",
     "a[href*='sign_out']",
+    "a[href*='accounts/profile']",
 ]
 
 LOGIN_LINK = "a[href*='sign_in'], a[href*='login']"
 
-# ── Course / Curriculum ──────────────────────────────────────────
+# -- Course / Curriculum ---------------------------------------------------
 CURRICULUM_LIST_CANDIDATES = [
     "ul.dp-curriculum",
     "#curriculum-list",
@@ -39,7 +40,7 @@ LESSON_COMPLETION_INDICATORS = [
     ".sj-icon-check",
 ]
 
-# ── Navigation ───────────────────────────────────────────────────
+# -- Navigation ------------------------------------------------------------
 NEXT_LESSON_CANDIDATES = [
     ".next-lesson-button",
     "a.next-lesson",
@@ -61,10 +62,10 @@ PREV_LESSON_CANDIDATES = [
     "a:has-text('Previous Lesson')",
 ]
 
-# ── Lesson Content ───────────────────────────────────────────────
+# -- Lesson Content --------------------------------------------------------
 LESSON_MAIN_CONTENT = "#lesson-main-content, .lesson-content, .sj-lesson-content, main"
 
-# ── Quiz ─────────────────────────────────────────────────────────
+# -- Quiz -----------------------------------------------------------------
 QUIZ_CONTAINER_CANDIDATES = [
     "#quiz-container",
     ".quiz-container",
@@ -162,13 +163,13 @@ QUIZ_INCORRECT_INDICATOR = [
     ".sj-incorrect",
 ]
 
-# ── Video Players ────────────────────────────────────────────────
+# -- Video Players ---------------------------------------------------------
 WISTIA_CONTAINER = "[class*='wistia'], .wistia_embed, .wistia_responsive_padding"
 VIMEO_CONTAINER = "iframe[src*='vimeo']"
 YOUTUBE_CONTAINER = "iframe[src*='youtube'], iframe[src*='youtu.be']"
 GENERIC_VIDEO = "video"
 
-# ── Completion / Progress ────────────────────────────────────────
+# -- Completion / Progress -------------------------------------------------
 LESSON_COMPLETE_BANNER = [
     ".sj-ribbon-complete",
     ".lesson-complete",

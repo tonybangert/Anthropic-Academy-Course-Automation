@@ -39,7 +39,7 @@ def build_quiz_prompt(
     if wrong_answers:
         eliminated = ", ".join(f'"{a}"' for a in wrong_answers)
         prompt += (
-            f"IMPORTANT: The following answers were already tried and are WRONG — "
+            f"IMPORTANT: The following answers were already tried and are WRONG -- "
             f"do NOT pick them: {eliminated}\n\n"
         )
 

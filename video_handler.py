@@ -9,7 +9,7 @@ from __future__ import annotations
 from playwright.async_api import Page
 from rich.console import Console
 
-from selectors import WISTIA_CONTAINER, VIMEO_CONTAINER, YOUTUBE_CONTAINER
+from css_selectors import WISTIA_CONTAINER, VIMEO_CONTAINER, YOUTUBE_CONTAINER
 
 console = Console()
 
@@ -39,7 +39,7 @@ async def _try_wistia_skip(page: Page) -> bool:
         """)
         if result and result.get("success"):
             console.print(
-                f"[green]    ✓ Wistia skip: jumped to {result['duration']:.0f}s[/green]"
+                f"[green]    [OK] Wistia skip: jumped to {result['duration']:.0f}s[/green]"
             )
             return True
     except Exception as e:
@@ -69,7 +69,7 @@ async def _try_wistia_via_wq(page: Page) -> bool:
         """)
         if result and result.get("success"):
             console.print(
-                f"[green]    ✓ Wistia _wq skip to {result['duration']:.0f}s[/green]"
+                f"[green]    [OK] Wistia _wq skip to {result['duration']:.0f}s[/green]"
             )
             return True
     except Exception:
@@ -93,7 +93,7 @@ async def _try_html5_video_skip(page: Page) -> bool:
         """)
         if result and result.get("success"):
             console.print(
-                f"[green]    ✓ HTML5 video skip to {result['duration']:.0f}s[/green]"
+                f"[green]    [OK] HTML5 video skip to {result['duration']:.0f}s[/green]"
             )
             return True
     except Exception:
@@ -143,8 +143,8 @@ async def handle_video_lesson(page: Page) -> str:
         console.print(
             "[yellow]    Could not skip video. Waiting for auto-completion...[/yellow]"
         )
-        # Wait a reasonable time — the user may need to interact
+        # Wait a reasonable time -- the user may need to interact
         await page.wait_for_timeout(10000)
 
-    console.print("[green]    ✓ Video lesson processed[/green]")
+    console.print("[green]    [OK] Video lesson processed[/green]")
     return description

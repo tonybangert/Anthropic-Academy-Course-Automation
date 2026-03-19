@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 from rich.console import Console
 
 from config import PLAYWRIGHT_DATA_DIR, DEBUG_SCREENSHOTS_DIR, SKILLJAR_BASE
-from selectors import LOGGED_IN_INDICATORS
+from css_selectors import LOGGED_IN_INDICATORS
 
 console = Console()
 

@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--discover",
         action="store_true",
-        help="Launch browser and test selectors — no course actions",
+        help="Launch browser and test selectors -- no course actions",
     )
     parser.add_argument(
         "--dry-run",
@@ -68,7 +68,7 @@ class NotesWriter:
     def _ensure_header(self):
         if not self._started:
             with open(self.path, "w", encoding="utf-8") as f:
-                f.write(f"# Anthropic Academy — Course Notes\n\n")
+                f.write(f"# Anthropic Academy -- Course Notes\n\n")
                 f.write(f"_Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_\n\n")
                 f.write("---\n\n")
             self._started = True
@@ -85,7 +85,7 @@ class NotesWriter:
 
     def add_lesson(self, title: str, lesson_type: str, content: str):
         with open(self.path, "a", encoding="utf-8") as f:
-            type_emoji = {"video": "🎬", "quiz": "📝", "text": "📄"}.get(lesson_type, "📌")
+            type_emoji = {"video": "[VIDEO]", "quiz": "[QUIZ]", "text": "[TEXT]"}.get(lesson_type, "[LESSON]")
             f.write(f"#### {type_emoji} {title}\n\n")
             if content:
                 # Truncate very long content but keep it meaningful
@@ -96,11 +96,11 @@ class NotesWriter:
 
     def add_quiz_result(self, title: str, questions: list, score: float):
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(f"#### 📝 {title} (Score: {score:.0f}%)\n\n")
+            f.write(f"#### [QUIZ] {title} (Score: {score:.0f}%)\n\n")
             for q in questions:
                 f.write(f"**Q{q.number}:** {q.text}\n")
                 for opt in q.options:
-                    marker = "**→**" if opt == q.selected_answer else "  "
+                    marker = "**->**" if opt == q.selected_answer else "  "
                     f.write(f"- {marker} {opt}\n")
                 if q.selected_answer:
                     f.write(f"\n_Selected: {q.selected_answer}_\n\n")
@@ -141,7 +141,7 @@ async def run_course(
     notes.start_course(course.name)
 
     if dry_run:
-        console.print("[yellow]Dry run — skipping lesson processing.[/yellow]")
+        console.print("[yellow]Dry run -- skipping lesson processing.[/yellow]")
         return
 
     # Process each lesson
@@ -162,7 +162,7 @@ async def run_course(
 
             # Skip completed lessons
             if lesson.status == LessonStatus.COMPLETED:
-                console.print(f"[dim]  ✓ Already complete: {lesson.title}[/dim]")
+                console.print(f"[dim]  [OK] Already complete: {lesson.title}[/dim]")
                 continue
 
             # Navigate to lesson

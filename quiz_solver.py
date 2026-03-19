@@ -11,7 +11,7 @@ from config import TARGET_SCORE, MAX_QUIZ_RETRIES
 from models import QuizQuestion, QuizResult
 from claude_client import ask_claude
 from mcp_validator.client import ValidatorClient
-from selectors import (
+from css_selectors import (
     QUIZ_CONTAINER_CANDIDATES,
     QUIZ_START_BUTTON_CANDIDATES,
     QUIZ_QUESTION_CANDIDATES,
@@ -218,7 +218,7 @@ async def handle_quiz_lesson(
     validator: ValidatorClient | None = None,
     course_context: str = "Anthropic Academy",
 ) -> QuizResult:
-    """Full quiz pipeline: start → extract → solve → validate → submit → check.
+    """Full quiz pipeline: start -> extract -> solve -> validate -> submit -> check.
 
     Retries up to MAX_QUIZ_RETRIES times if score < TARGET_SCORE.
     """
@@ -252,7 +252,7 @@ async def handle_quiz_lesson(
             wrong = wrong_answers_map.get(q.number, [])
             answer = ask_claude(q, wrong_answers=wrong if wrong else None)
 
-            # MCP validation gate — verify answer before selecting
+            # MCP validation gate -- verify answer before selecting
             if validator:
                 answer = await _validate_with_mcp(
                     validator, q, answer, course_context
@@ -261,7 +261,7 @@ async def handle_quiz_lesson(
             q.selected_answer = answer
 
             console.print(f"[dim]    Q{q.number}: {q.text[:60]}...[/dim]")
-            console.print(f"[dim]    → Answer: {answer[:60]}[/dim]")
+            console.print(f"[dim]    -> Answer: {answer[:60]}[/dim]")
 
             # Select the answer in the browser
             if i < len(q_elements):
@@ -308,7 +308,7 @@ async def _validate_with_mcp(
 ) -> str:
     """Run the proposed answer through the MCP validator.
 
-    Returns the final answer — either the original or the reviewer's alternative.
+    Returns the final answer -- either the original or the reviewer's alternative.
     """
     try:
         result = await validator.validate(
@@ -330,17 +330,17 @@ async def _validate_with_mcp(
             return proposed_answer
         else:
             console.print(
-                f"[yellow]    MCP: rejected ({confidence:.0%}) — {reasoning[:80]}[/yellow]"
+                f"[yellow]    MCP: rejected ({confidence:.0%}) -- {reasoning[:80]}[/yellow]"
             )
             if suggested and suggested in question.options:
-                console.print(f"[cyan]    MCP: using alternative → {suggested[:60]}[/cyan]")
+                console.print(f"[cyan]    MCP: using alternative -> {suggested[:60]}[/cyan]")
                 return suggested
             else:
                 console.print("[dim]    MCP: no valid alternative, keeping original[/dim]")
                 return proposed_answer
 
     except Exception as e:
-        console.print(f"[yellow]    MCP validation error: {e} — using original answer[/yellow]")
+        console.print(f"[yellow]    MCP validation error: {e} -- using original answer[/yellow]")
         return proposed_answer
 
 
@@ -376,7 +376,7 @@ async def _tag_wrong_answers(
             except Exception:
                 continue
 
-        # Also check for correct markers — if present and NOT found, it's wrong
+        # Also check for correct markers -- if present and NOT found, it's wrong
         if not found_any_marker:
             for indicator in QUIZ_CORRECT_INDICATOR:
                 try:
@@ -397,7 +397,7 @@ async def _tag_wrong_answers(
 
     # If no DOM markers were found at all, conservatively mark all as potentially wrong
     if not found_any_marker:
-        console.print("[dim]    No correct/incorrect markers found — recording all answers for retry[/dim]")
+        console.print("[dim]    No correct/incorrect markers found -- recording all answers for retry[/dim]")
         for q in questions:
             if q.selected_answer:
                 wrong_answers_map.setdefault(q.number, []).append(q.selected_answer)

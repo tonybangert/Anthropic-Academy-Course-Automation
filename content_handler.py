@@ -9,7 +9,7 @@ from __future__ import annotations
 from playwright.async_api import Page
 from rich.console import Console
 
-from selectors import LESSON_MAIN_CONTENT
+from css_selectors import LESSON_MAIN_CONTENT
 
 console = Console()
 
@@ -61,5 +61,5 @@ async def handle_content_lesson(page: Page) -> str:
     """)
 
     await page.wait_for_timeout(2000)
-    console.print("[green]    ✓ Content lesson processed[/green]")
+    console.print("[green]    [OK] Content lesson processed[/green]")
     return text

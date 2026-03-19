@@ -7,7 +7,7 @@ from rich.console import Console
 
 from config import course_url, COURSES, SKILLJAR_BASE
 from models import Course, Lesson, LessonType, LessonStatus
-from selectors import (
+from css_selectors import (
     LOGGED_IN_INDICATORS,
     CURRICULUM_LIST_CANDIDATES,
     CURRICULUM_SECTION_HEADER,
@@ -54,7 +54,12 @@ class CourseNavigator:
         return Course(key=course_key, name=name, url=url, lessons=lessons)
 
     async def _parse_curriculum(self) -> list[Lesson]:
-        """Extract lessons from the sidebar curriculum."""
+        """Extract lessons from the sidebar curriculum.
+
+        Skilljar uses <li data-url="..."> elements (not <a> links)
+        inside ul.dp-curriculum. Lesson type is encoded in the li class
+        (e.g. 'lesson-modular', 'lesson-quiz', 'lesson-video').
+        """
         # Find the curriculum container
         curriculum_el, curriculum_sel = await _find_first(
             self.page, CURRICULUM_LIST_CANDIDATES
@@ -69,53 +74,59 @@ class CourseNavigator:
 
         console.print(f"[dim]Using curriculum selector: {curriculum_sel}[/dim]")
 
-        # Get all lesson links within the curriculum
-        links = await curriculum_el.query_selector_all("a[href]")
+        # Skilljar lessons are <li data-url="/course-slug/12345">
+        items = await curriculum_el.query_selector_all("li[data-url]")
         lessons: list[Lesson] = []
         current_section = ""
 
-        for link in links:
-            # Check if there's a section header before this link
-            parent = await link.evaluate_handle(
-                "(el) => el.closest('li') || el.parentElement"
-            )
-            section_el = await parent.as_element().query_selector(
-                CURRICULUM_SECTION_HEADER
-            ) if parent else None
-            if section_el:
-                current_section = (await section_el.inner_text()).strip()
+        for item in items:
+            data_url = await item.get_attribute("data-url") or ""
+            classes = await item.get_attribute("class") or ""
 
-            href = await link.get_attribute("href") or ""
-            title = (await link.inner_text()).strip()
+            # Get lesson title from .lesson-wrapper text
+            wrapper = await item.query_selector(".lesson-wrapper")
+            title = ""
+            if wrapper:
+                title = (await wrapper.inner_text()).strip()
+            if not title:
+                title = (await item.inner_text()).strip()
 
-            if not title or not href:
+            if not title or not data_url:
                 continue
+
+            # Build full URL
+            url = data_url
+            if url.startswith("/"):
+                url = f"https://anthropic.skilljar.com{url}"
+
+            # Detect type from CSS class
+            lesson_type = LessonType.UNKNOWN
+            if "lesson-quiz" in classes or "lesson-assessment" in classes:
+                lesson_type = LessonType.QUIZ
+            elif "lesson-video" in classes:
+                lesson_type = LessonType.VIDEO
+            elif "lesson-modular" in classes or "lesson-text" in classes:
+                lesson_type = LessonType.TEXT
 
             # Check completion status
             status = LessonStatus.NOT_STARTED
-            parent_li = await link.evaluate_handle(
-                "(el) => el.closest('li')"
-            )
-            if parent_li:
-                li_el = parent_li.as_element()
-                if li_el:
-                    for indicator in LESSON_COMPLETION_INDICATORS:
-                        try:
-                            check = await li_el.query_selector(indicator)
-                            if check:
-                                status = LessonStatus.COMPLETED
-                                break
-                        except Exception:
-                            continue
-
-            # Normalize URL
-            if href.startswith("/"):
-                href = f"https://anthropic.skilljar.com{href}"
+            if "sj-ribbon-complete" in classes or "completed" in classes:
+                status = LessonStatus.COMPLETED
+            else:
+                for indicator in LESSON_COMPLETION_INDICATORS:
+                    try:
+                        check = await item.query_selector(indicator)
+                        if check:
+                            status = LessonStatus.COMPLETED
+                            break
+                    except Exception:
+                        continue
 
             lessons.append(
                 Lesson(
                     title=title,
-                    url=href,
+                    url=url,
+                    lesson_type=lesson_type,
                     section=current_section,
                     status=status,
                 )
@@ -158,13 +169,13 @@ class CourseNavigator:
 
     async def navigate_to_lesson(self, lesson: Lesson):
         """Go to a specific lesson by URL."""
-        console.print(f"[cyan]  → {lesson.title}[/cyan]")
+        console.print(f"[cyan]  -> {lesson.title}[/cyan]")
         await self.page.goto(lesson.url, wait_until="domcontentloaded")
         await self.page.wait_for_timeout(2000)
 
         # Check if session expired during navigation
         if not await self.check_session():
-            console.print("[yellow]  Session expired — waiting for re-login...[/yellow]")
+            console.print("[yellow]  Session expired -- waiting for re-login...[/yellow]")
             import asyncio
             for _ in range(60):  # wait up to 2 minutes
                 await asyncio.sleep(2)

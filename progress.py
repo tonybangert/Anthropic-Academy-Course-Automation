@@ -5,7 +5,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+from rich.progress import Progress, TextColumn, BarColumn
 
 from models import Course, Lesson, LessonStatus, QuizResult
 from config import COURSES, TARGET_SCORE
@@ -77,7 +77,6 @@ def show_quiz_result(result: QuizResult):
 def create_progress() -> Progress:
     """Create a Rich progress bar for lesson processing."""
     return Progress(
-        SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TextColumn("{task.completed}/{task.total}"),

@@ -31,7 +31,7 @@ async def handle_lesson(
     result = {"type": lesson_type.value, "text": "", "quiz_result": None}
 
     if lesson_type == LessonType.QUIZ:
-        console.print(f"[bold magenta]  📝 Quiz: {lesson.title}[/bold magenta]")
+        console.print(f"[bold magenta]  [QUIZ] {lesson.title}[/bold magenta]")
         quiz_result: QuizResult = await handle_quiz_lesson(
             page, validator=validator, course_context=course_context
         )
@@ -41,7 +41,7 @@ async def handle_lesson(
         for q in quiz_result.questions:
             lines.append(f"  Q{q.number}: {q.text}")
             for opt in q.options:
-                marker = "→" if opt == q.selected_answer else " "
+                marker = "->" if opt == q.selected_answer else " "
                 lines.append(f"    {marker} {opt}")
             if q.selected_answer:
                 lines.append(f"  Answer: {q.selected_answer}")
@@ -49,17 +49,17 @@ async def handle_lesson(
         result["text"] = "\n".join(lines)
 
     elif lesson_type == LessonType.VIDEO:
-        console.print(f"[bold blue]  🎬 Video: {lesson.title}[/bold blue]")
+        console.print(f"[bold blue]  [VIDEO] {lesson.title}[/bold blue]")
         text = await handle_video_lesson(page)
         result["text"] = text or f"Video lesson: {lesson.title}"
 
     elif lesson_type in (LessonType.TEXT, LessonType.MODULAR, LessonType.PDF):
-        console.print(f"[bold green]  📄 Content: {lesson.title}[/bold green]")
+        console.print(f"[bold green]  [TEXT] {lesson.title}[/bold green]")
         text = await handle_content_lesson(page)
         result["text"] = text
 
     else:
-        console.print(f"[yellow]  ❓ Unknown type: {lesson.title}[/yellow]")
+        console.print(f"[yellow]  [?] Unknown type: {lesson.title}[/yellow]")
         text = await handle_content_lesson(page)
         result["text"] = text
 

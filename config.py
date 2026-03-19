@@ -51,4 +51,4 @@ COURSES = {
 def course_url(key: str) -> str:
     """Return full Skilljar URL for a course key."""
     _, slug = COURSES[key]
-    return f"{SKILLJAR_BASE}/page/{slug}"
+    return f"{SKILLJAR_BASE}/{slug}"

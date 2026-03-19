@@ -15,7 +15,7 @@ from mcp.server import Server
 from mcp.server.stdio import run_stdio
 from mcp.types import Tool, TextContent
 
-# ── Config ────────────────────────────────────────────────────────
+# -- Config ---------------------------------------------------------------
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 REVIEWER_MODEL = os.getenv("REVIEWER_MODEL", "claude-sonnet-4-20250514")
 CONFIDENCE_THRESHOLD = 0.85  # below this, suggest an alternative
@@ -24,7 +24,7 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 server = Server("quiz-validator")
 
 
-# ── Tool definition ───────────────────────────────────────────────
+# -- Tool definition -------------------------------------------------------
 VALIDATE_TOOL = Tool(
     name="validate_quiz_answer",
     description=(
@@ -76,7 +76,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(result))]
 
 
-# ── Core validation logic ─────────────────────────────────────────
+# -- Core validation logic -------------------------------------------------
 def validate_answer(
     question: str,
     options: list[str],
@@ -146,7 +146,7 @@ def validate_answer(
                 "suggested_answer": None,
             }
         else:
-            # Reviewer disagrees or low confidence — suggest the reviewer's pick
+            # Reviewer disagrees or low confidence -- suggest the reviewer's pick
             suggested = _match_to_option(correct, options)
             return {
                 "validated": False,
@@ -183,7 +183,7 @@ def _match_to_option(text: str, options: list[str]) -> str:
     return text
 
 
-# ── Entry point ───────────────────────────────────────────────────
+# -- Entry point -----------------------------------------------------------
 async def main():
     await run_stdio(server)
 
