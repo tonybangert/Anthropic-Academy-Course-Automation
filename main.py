@@ -14,6 +14,7 @@ from config import COURSES, COURSE_NOTES_PATH, TARGET_SCORE
 from browser import BrowserManager
 from navigator import CourseNavigator
 from lesson_handler import handle_lesson
+from mcp_validator.client import ValidatorClient
 from models import LessonStatus, LessonType
 from progress import show_banner, show_course_table, show_curriculum, show_quiz_result, create_progress
 
@@ -48,6 +49,11 @@ def parse_args() -> argparse.Namespace:
         "--headless",
         action="store_true",
         help="Run browser in headless mode (not recommended for first run)",
+    )
+    parser.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="Skip MCP validation of quiz answers (faster but less accurate)",
     )
     return parser.parse_args()
 
@@ -123,6 +129,7 @@ async def run_course(
     course_key: str,
     notes: NotesWriter,
     dry_run: bool = False,
+    validator: ValidatorClient | None = None,
 ):
     """Process a single course end-to-end."""
     page = browser.page
@@ -167,7 +174,12 @@ async def run_course(
 
             try:
                 # Handle the lesson
-                result = await handle_lesson(page, lesson, lesson_type)
+                course_name, _ = COURSES[course_key]
+                result = await handle_lesson(
+                    page, lesson, lesson_type,
+                    validator=validator,
+                    course_context=course_name,
+                )
 
                 # Write notes
                 if lesson_type == LessonType.QUIZ and result.get("quiz_result"):
@@ -211,6 +223,7 @@ async def main():
 
     browser = BrowserManager(headless=args.headless)
     notes = NotesWriter(COURSE_NOTES_PATH)
+    validator: ValidatorClient | None = None
 
     try:
         page = await browser.launch()
@@ -224,6 +237,13 @@ async def main():
             await run_discover(browser)
             return
 
+        # Start MCP validator unless disabled
+        if not args.no_validate and not args.dry_run:
+            console.print("[cyan]Starting MCP quiz validator...[/cyan]")
+            validator = ValidatorClient()
+            await validator.connect()
+            console.print("[green]MCP validator ready.[/green]")
+
         # Determine which courses to run
         course_keys = [args.course] if args.course else list(COURSES.keys())
 
@@ -234,7 +254,9 @@ async def main():
             console.print(f"[bold]{'='*60}[/bold]\n")
 
             await run_course(
-                browser, key, notes, dry_run=args.dry_run
+                browser, key, notes,
+                dry_run=args.dry_run,
+                validator=validator,
             )
 
         console.print(f"\n[bold green]All done! Notes saved to: {COURSE_NOTES_PATH}[/bold green]")
@@ -249,6 +271,8 @@ async def main():
             pass
         raise
     finally:
+        if validator:
+            await validator.close()
         await browser.close()
 
 

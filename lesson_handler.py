@@ -9,6 +9,7 @@ from models import Lesson, LessonType, QuizResult
 from content_handler import handle_content_lesson
 from video_handler import handle_video_lesson
 from quiz_solver import handle_quiz_lesson
+from mcp_validator.client import ValidatorClient
 
 console = Console()
 
@@ -17,6 +18,8 @@ async def handle_lesson(
     page: Page,
     lesson: Lesson,
     lesson_type: LessonType,
+    validator: ValidatorClient | None = None,
+    course_context: str = "Anthropic Academy",
 ) -> dict:
     """Dispatch to the right handler based on lesson type.
 
@@ -29,7 +32,9 @@ async def handle_lesson(
 
     if lesson_type == LessonType.QUIZ:
         console.print(f"[bold magenta]  📝 Quiz: {lesson.title}[/bold magenta]")
-        quiz_result: QuizResult = await handle_quiz_lesson(page)
+        quiz_result: QuizResult = await handle_quiz_lesson(
+            page, validator=validator, course_context=course_context
+        )
         result["quiz_result"] = quiz_result
         # Build notes text from quiz Q&A
         lines = [f"Quiz: {lesson.title}"]

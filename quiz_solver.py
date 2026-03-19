@@ -10,6 +10,7 @@ from rich.console import Console
 from config import TARGET_SCORE, MAX_QUIZ_RETRIES
 from models import QuizQuestion, QuizResult
 from claude_client import ask_claude
+from mcp_validator.client import ValidatorClient
 from selectors import (
     QUIZ_CONTAINER_CANDIDATES,
     QUIZ_START_BUTTON_CANDIDATES,
@@ -212,8 +213,12 @@ async def _parse_results(page: Page) -> QuizResult:
     return QuizResult(score_percent=score, passed=passed)
 
 
-async def handle_quiz_lesson(page: Page) -> QuizResult:
-    """Full quiz pipeline: start → extract → solve → submit → check.
+async def handle_quiz_lesson(
+    page: Page,
+    validator: ValidatorClient | None = None,
+    course_context: str = "Anthropic Academy",
+) -> QuizResult:
+    """Full quiz pipeline: start → extract → solve → validate → submit → check.
 
     Retries up to MAX_QUIZ_RETRIES times if score < TARGET_SCORE.
     """
@@ -246,6 +251,13 @@ async def handle_quiz_lesson(page: Page) -> QuizResult:
 
             wrong = wrong_answers_map.get(q.number, [])
             answer = ask_claude(q, wrong_answers=wrong if wrong else None)
+
+            # MCP validation gate — verify answer before selecting
+            if validator:
+                answer = await _validate_with_mcp(
+                    validator, q, answer, course_context
+                )
+
             q.selected_answer = answer
 
             console.print(f"[dim]    Q{q.number}: {q.text[:60]}...[/dim]")
@@ -286,6 +298,50 @@ async def handle_quiz_lesson(page: Page) -> QuizResult:
     return QuizResult(
         score_percent=0, passed=False, attempt_number=MAX_QUIZ_RETRIES
     )
+
+
+async def _validate_with_mcp(
+    validator: ValidatorClient,
+    question: QuizQuestion,
+    proposed_answer: str,
+    course_context: str,
+) -> str:
+    """Run the proposed answer through the MCP validator.
+
+    Returns the final answer — either the original or the reviewer's alternative.
+    """
+    try:
+        result = await validator.validate(
+            question=question.text,
+            options=question.options,
+            proposed_answer=proposed_answer,
+            course_context=course_context,
+        )
+
+        confidence = result.get("confidence", 1.0)
+        validated = result.get("validated", True)
+        reasoning = result.get("reasoning", "")
+        suggested = result.get("suggested_answer")
+
+        if validated:
+            console.print(
+                f"[dim]    MCP: validated ({confidence:.0%} confidence)[/dim]"
+            )
+            return proposed_answer
+        else:
+            console.print(
+                f"[yellow]    MCP: rejected ({confidence:.0%}) — {reasoning[:80]}[/yellow]"
+            )
+            if suggested and suggested in question.options:
+                console.print(f"[cyan]    MCP: using alternative → {suggested[:60]}[/cyan]")
+                return suggested
+            else:
+                console.print("[dim]    MCP: no valid alternative, keeping original[/dim]")
+                return proposed_answer
+
+    except Exception as e:
+        console.print(f"[yellow]    MCP validation error: {e} — using original answer[/yellow]")
+        return proposed_answer
 
 
 async def _tag_wrong_answers(
