@@ -277,18 +277,8 @@ async def handle_quiz_lesson(page: Page) -> QuizResult:
         if result.passed:
             return result
 
-        # Track wrong answers for retry
-        # Check which questions were wrong (if result details available)
-        for q in questions:
-            for indicator in QUIZ_INCORRECT_INDICATOR:
-                try:
-                    # Search for incorrect markers near the question
-                    pass  # will be refined based on actual DOM
-                except Exception:
-                    pass
-            # Assume any unverified answer might be wrong
-            if q.selected_answer:
-                wrong_answers_map.setdefault(q.number, []).append(q.selected_answer)
+        # Track wrong answers for retry by inspecting result DOM
+        await _tag_wrong_answers(page, questions, q_elements, wrong_answers_map)
 
         await page.wait_for_timeout(2000)
 
@@ -296,3 +286,62 @@ async def handle_quiz_lesson(page: Page) -> QuizResult:
     return QuizResult(
         score_percent=0, passed=False, attempt_number=MAX_QUIZ_RETRIES
     )
+
+
+async def _tag_wrong_answers(
+    page: Page,
+    questions: list[QuizQuestion],
+    q_elements: list,
+    wrong_answers_map: dict[int, list[str]],
+):
+    """After submission, inspect the DOM to find which answers were wrong.
+
+    If the platform marks correct/incorrect answers, we only record the
+    genuinely wrong ones. Otherwise, we conservatively record all selected
+    answers (the retry prompt will exclude them).
+    """
+    found_any_marker = False
+
+    for i, q in enumerate(questions):
+        if i >= len(q_elements):
+            break
+
+        q_el = q_elements[i]
+        is_wrong = False
+
+        # Check for explicit incorrect markers on the question container
+        for indicator in QUIZ_INCORRECT_INDICATOR:
+            try:
+                marker = await q_el.query_selector(indicator)
+                if marker:
+                    is_wrong = True
+                    found_any_marker = True
+                    break
+            except Exception:
+                continue
+
+        # Also check for correct markers — if present and NOT found, it's wrong
+        if not found_any_marker:
+            for indicator in QUIZ_CORRECT_INDICATOR:
+                try:
+                    marker = await q_el.query_selector(indicator)
+                    if marker:
+                        q.is_correct = True
+                        found_any_marker = True
+                        break
+                except Exception:
+                    continue
+            if found_any_marker and q.is_correct is None:
+                is_wrong = True
+
+        if is_wrong and q.selected_answer:
+            q.is_correct = False
+            wrong_answers_map.setdefault(q.number, []).append(q.selected_answer)
+            console.print(f"[dim]    Q{q.number}: '{q.selected_answer}' was wrong[/dim]")
+
+    # If no DOM markers were found at all, conservatively mark all as potentially wrong
+    if not found_any_marker:
+        console.print("[dim]    No correct/incorrect markers found — recording all answers for retry[/dim]")
+        for q in questions:
+            if q.selected_answer:
+                wrong_answers_map.setdefault(q.number, []).append(q.selected_answer)

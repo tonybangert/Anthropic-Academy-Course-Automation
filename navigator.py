@@ -5,9 +5,10 @@ from __future__ import annotations
 from playwright.async_api import Page
 from rich.console import Console
 
-from config import course_url, COURSES
+from config import course_url, COURSES, SKILLJAR_BASE
 from models import Course, Lesson, LessonType, LessonStatus
 from selectors import (
+    LOGGED_IN_INDICATORS,
     CURRICULUM_LIST_CANDIDATES,
     CURRICULUM_SECTION_HEADER,
     LESSON_COMPLETION_INDICATORS,
@@ -140,11 +141,39 @@ class CourseNavigator:
         console.print(f"[green]Fallback found {len(lessons)} lessons[/green]")
         return lessons
 
+    async def check_session(self) -> bool:
+        """Verify we're still logged in. Returns False if session expired."""
+        for sel in LOGGED_IN_INDICATORS:
+            try:
+                el = await self.page.query_selector(sel)
+                if el:
+                    return True
+            except Exception:
+                continue
+        # Also check if we got redirected to a login page
+        url = self.page.url
+        if "sign_in" in url or "login" in url:
+            return False
+        return True
+
     async def navigate_to_lesson(self, lesson: Lesson):
         """Go to a specific lesson by URL."""
         console.print(f"[cyan]  → {lesson.title}[/cyan]")
         await self.page.goto(lesson.url, wait_until="domcontentloaded")
         await self.page.wait_for_timeout(2000)
+
+        # Check if session expired during navigation
+        if not await self.check_session():
+            console.print("[yellow]  Session expired — waiting for re-login...[/yellow]")
+            import asyncio
+            for _ in range(60):  # wait up to 2 minutes
+                await asyncio.sleep(2)
+                if await self.check_session():
+                    console.print("[green]  Re-login detected, resuming.[/green]")
+                    await self.page.goto(lesson.url, wait_until="domcontentloaded")
+                    await self.page.wait_for_timeout(2000)
+                    return
+            raise RuntimeError("Session expired and re-login timed out")
 
     async def detect_lesson_type(self, lesson: Lesson) -> LessonType:
         """Detect what type of content the current page has."""

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import anthropic
 from rich.console import Console
 
@@ -12,16 +14,37 @@ console = Console()
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+API_RETRY_ATTEMPTS = 3
+API_RETRY_DELAY = 2  # seconds
+
 
 def build_quiz_prompt(
     question: QuizQuestion,
     wrong_answers: list[str] | None = None,
 ) -> str:
-    """Build the prompt for Claude to answer a multiple-choice question.
+    """Build the prompt for Claude to answer a multiple-choice question."""
+    options_block = "\n".join(
+        f"  {chr(65 + i)}) {opt}" for i, opt in enumerate(question.options)
+    )
 
-    TODO(human): Implement this function. See the Learn by Doing request below.
-    """
-    pass
+    prompt = (
+        "You are answering a multiple-choice quiz from Anthropic Academy, "
+        "which covers Claude API usage, Model Context Protocol (MCP), "
+        "agentic tool-use patterns, and Claude Code. "
+        "Pick the single best answer.\n\n"
+        f"Question: {question.text}\n\n"
+        f"Options:\n{options_block}\n\n"
+    )
+
+    if wrong_answers:
+        eliminated = ", ".join(f'"{a}"' for a in wrong_answers)
+        prompt += (
+            f"IMPORTANT: The following answers were already tried and are WRONG — "
+            f"do NOT pick them: {eliminated}\n\n"
+        )
+
+    prompt += "Reply with ONLY the letter (A, B, C, or D). Nothing else."
+    return prompt
 
 
 def ask_claude(question: QuizQuestion, wrong_answers: list[str] | None = None) -> str:
@@ -36,15 +59,22 @@ def ask_claude(question: QuizQuestion, wrong_answers: list[str] | None = None) -
     """
     prompt = build_quiz_prompt(question, wrong_answers)
 
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=50,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    raw_answer = response.content[0].text.strip()
-    return _match_to_option(raw_answer, question.options)
+    for attempt in range(1, API_RETRY_ATTEMPTS + 1):
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=10,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_answer = response.content[0].text.strip()
+            return _match_to_option(raw_answer, question.options)
+        except anthropic.APIError as e:
+            console.print(f"[yellow]    API error (attempt {attempt}): {e}[/yellow]")
+            if attempt < API_RETRY_ATTEMPTS:
+                time.sleep(API_RETRY_DELAY * attempt)
+            else:
+                raise
 
 
 def _match_to_option(raw_answer: str, options: list[str]) -> str:
