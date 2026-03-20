@@ -42,14 +42,14 @@ LESSON_COMPLETION_INDICATORS = [
 
 # -- Navigation ------------------------------------------------------------
 NEXT_LESSON_CANDIDATES = [
+    "a[class*='next-lesson']",
+    "a:has-text('Next')",
+    "button:has-text('Next')",
     ".next-lesson-button",
     "a.next-lesson",
-    "[data-testid='next-lesson']",
     ".sj-next-lesson",
-    "a[rel='next']",
-    "button:has-text('Next')",
     "a:has-text('Next Lesson')",
-    "a:has-text('Next')",
+    "a[rel='next']",
 ]
 
 PREV_LESSON_CANDIDATES = [

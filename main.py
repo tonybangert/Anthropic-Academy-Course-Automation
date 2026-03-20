@@ -181,6 +181,13 @@ async def run_course(
                     course_context=course_name,
                 )
 
+                # Click "Next" to trigger Skilljar completion tracking
+                clicked_next = await nav.click_next_lesson()
+                if clicked_next:
+                    console.print("[dim]  -> Next lesson[/dim]")
+                else:
+                    console.print("[dim]  (no Next button found)[/dim]")
+
                 # Write notes
                 if lesson_type == LessonType.QUIZ and result.get("quiz_result"):
                     qr = result["quiz_result"]

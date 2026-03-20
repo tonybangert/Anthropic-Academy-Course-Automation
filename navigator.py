@@ -50,15 +50,58 @@ class CourseNavigator:
         await self.page.goto(url, wait_until="domcontentloaded")
         await self.page.wait_for_timeout(3000)
 
+        # Auto-register if not enrolled
+        await self._ensure_registered()
+
         lessons = await self._parse_curriculum()
         return Course(key=course_key, name=name, url=url, lessons=lessons)
+
+    async def _ensure_registered(self):
+        """Click the Register/Enroll button if the course requires it."""
+        register_selectors = [
+            "a.purchase-button:has-text('Register')",
+            "a:has-text('Register | FREE')",
+            "a:has-text('Enroll')",
+            "button:has-text('Register')",
+            "button:has-text('Enroll')",
+            ".purchase-button",
+        ]
+        for sel in register_selectors:
+            try:
+                el = await self.page.query_selector(sel)
+                if el and await el.is_visible():
+                    console.print(f"[yellow]Course not enrolled -- clicking Register...[/yellow]")
+                    await el.click()
+                    await self.page.wait_for_timeout(5000)
+                    # Registration might redirect to checkout or straight to course
+                    # If we land on a checkout page, look for a confirm button
+                    confirm_selectors = [
+                        "button:has-text('Enroll')",
+                        "button:has-text('Complete')",
+                        "button:has-text('Confirm')",
+                        "input[type='submit']",
+                        "button[type='submit']",
+                    ]
+                    for csol in confirm_selectors:
+                        try:
+                            cbtn = await self.page.query_selector(csol)
+                            if cbtn and await cbtn.is_visible():
+                                await cbtn.click()
+                                await self.page.wait_for_timeout(5000)
+                                break
+                        except Exception:
+                            continue
+                    console.print("[green]Registration complete.[/green]")
+                    return
+            except Exception:
+                continue
 
     async def _parse_curriculum(self) -> list[Lesson]:
         """Extract lessons from the sidebar curriculum.
 
-        Skilljar uses <li data-url="..."> elements (not <a> links)
-        inside ul.dp-curriculum. Lesson type is encoded in the li class
-        (e.g. 'lesson-modular', 'lesson-quiz', 'lesson-video').
+        Skilljar has two different DOM layouts:
+        1. Pre-registration: ul.dp-curriculum with <li data-url="...">
+        2. Post-registration: #curriculum-list with <a href="...">
         """
         # Find the curriculum container
         curriculum_el, curriculum_sel = await _find_first(
@@ -74,16 +117,86 @@ class CourseNavigator:
 
         console.print(f"[dim]Using curriculum selector: {curriculum_sel}[/dim]")
 
-        # Skilljar lessons are <li data-url="/course-slug/12345">
+        # Strategy 1: Post-registration <a> links in #curriculum-list
+        links = await curriculum_el.query_selector_all("a[href][role='listitem']")
+        if not links:
+            # Also try plain <a> with lesson hrefs
+            links = await curriculum_el.query_selector_all("a[href*='/']")
+            # Filter to lesson links only (have numeric path segments)
+            filtered = []
+            for link in links:
+                href = await link.get_attribute("href") or ""
+                if href and any(c.isdigit() for c in href.split("/")[-1]):
+                    filtered.append(link)
+            links = filtered
+
+        if links:
+            return await self._parse_link_curriculum(links)
+
+        # Strategy 2: Pre-registration <li data-url> items
         items = await curriculum_el.query_selector_all("li[data-url]")
+        if items:
+            return await self._parse_li_curriculum(items)
+
+        console.print("[yellow]No lessons found in curriculum container[/yellow]")
+        return []
+
+    async def _parse_link_curriculum(self, links) -> list[Lesson]:
+        """Parse curriculum from <a> link elements (post-registration layout)."""
         lessons: list[Lesson] = []
-        current_section = ""
+
+        for link in links:
+            href = await link.get_attribute("href") or ""
+            classes = await link.get_attribute("class") or ""
+
+            # Get title from .title element or inner text
+            title_el = await link.query_selector(".title")
+            title = ""
+            if title_el:
+                title = (await title_el.inner_text()).strip()
+            if not title:
+                title = (await link.inner_text()).strip()
+                # Clean up multi-line text
+                lines = [l.strip() for l in title.split("\n") if l.strip()]
+                title = lines[0] if lines else title
+
+            if not title or not href:
+                continue
+
+            # Build full URL
+            url = href
+            if url.startswith("/"):
+                url = f"https://anthropic.skilljar.com{url}"
+
+            # Detect type from CSS class
+            lesson_type = self._detect_type_from_class(classes)
+
+            # Check completion from class or icon
+            status = LessonStatus.NOT_STARTED
+            if "lesson-complete" in classes:
+                status = LessonStatus.COMPLETED
+            elif "lesson-incomplete" in classes:
+                status = LessonStatus.NOT_STARTED
+            else:
+                check = await link.query_selector(".fa-check-circle, .fa-check")
+                if check:
+                    status = LessonStatus.COMPLETED
+
+            lessons.append(
+                Lesson(title=title, url=url, lesson_type=lesson_type, status=status)
+            )
+
+        console.print(f"[green]Found {len(lessons)} lessons[/green]")
+        return lessons
+
+    async def _parse_li_curriculum(self, items) -> list[Lesson]:
+        """Parse curriculum from <li data-url> elements (pre-registration layout)."""
+        lessons: list[Lesson] = []
 
         for item in items:
             data_url = await item.get_attribute("data-url") or ""
             classes = await item.get_attribute("class") or ""
 
-            # Get lesson title from .lesson-wrapper text
             wrapper = await item.query_selector(".lesson-wrapper")
             title = ""
             if wrapper:
@@ -94,23 +207,14 @@ class CourseNavigator:
             if not title or not data_url:
                 continue
 
-            # Build full URL
             url = data_url
             if url.startswith("/"):
                 url = f"https://anthropic.skilljar.com{url}"
 
-            # Detect type from CSS class
-            lesson_type = LessonType.UNKNOWN
-            if "lesson-quiz" in classes or "lesson-assessment" in classes:
-                lesson_type = LessonType.QUIZ
-            elif "lesson-video" in classes:
-                lesson_type = LessonType.VIDEO
-            elif "lesson-modular" in classes or "lesson-text" in classes:
-                lesson_type = LessonType.TEXT
+            lesson_type = self._detect_type_from_class(classes)
 
-            # Check completion status
             status = LessonStatus.NOT_STARTED
-            if "sj-ribbon-complete" in classes or "completed" in classes:
+            if "lesson-complete" in classes:
                 status = LessonStatus.COMPLETED
             else:
                 for indicator in LESSON_COMPLETION_INDICATORS:
@@ -123,17 +227,22 @@ class CourseNavigator:
                         continue
 
             lessons.append(
-                Lesson(
-                    title=title,
-                    url=url,
-                    lesson_type=lesson_type,
-                    section=current_section,
-                    status=status,
-                )
+                Lesson(title=title, url=url, lesson_type=lesson_type, status=status)
             )
 
         console.print(f"[green]Found {len(lessons)} lessons[/green]")
         return lessons
+
+    @staticmethod
+    def _detect_type_from_class(classes: str) -> LessonType:
+        """Detect lesson type from CSS classes."""
+        if "lesson-quiz" in classes or "lesson-assessment" in classes:
+            return LessonType.QUIZ
+        elif "lesson-video" in classes:
+            return LessonType.VIDEO
+        elif "lesson-modular" in classes or "lesson-text" in classes:
+            return LessonType.TEXT
+        return LessonType.UNKNOWN
 
     async def _fallback_discover_lessons(self) -> list[Lesson]:
         """Fallback: find lesson links anywhere on the page."""

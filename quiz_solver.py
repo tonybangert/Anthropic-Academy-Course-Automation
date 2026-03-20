@@ -1,4 +1,8 @@
-"""Quiz detection, extraction, Claude-powered solving, and submission."""
+"""Quiz detection, extraction, Claude-powered solving, and submission.
+
+Skilljar quizzes display one question at a time via AJAX:
+  Start -> Q1 -> answer -> Next -> Q2 -> ... -> Results
+"""
 
 from __future__ import annotations
 
@@ -11,206 +15,201 @@ from config import TARGET_SCORE, MAX_QUIZ_RETRIES
 from models import QuizQuestion, QuizResult
 from claude_client import ask_claude
 from mcp_validator.client import ValidatorClient
-from css_selectors import (
-    QUIZ_CONTAINER_CANDIDATES,
-    QUIZ_START_BUTTON_CANDIDATES,
-    QUIZ_QUESTION_CANDIDATES,
-    QUIZ_QUESTION_TEXT_CANDIDATES,
-    QUIZ_OPTION_CANDIDATES,
-    QUIZ_RADIO_CANDIDATES,
-    QUIZ_SUBMIT_CANDIDATES,
-    QUIZ_SCORE_CANDIDATES,
-    QUIZ_RESULT_CONTAINER_CANDIDATES,
-    QUIZ_CORRECT_INDICATOR,
-    QUIZ_INCORRECT_INDICATOR,
-)
 
 console = Console()
 
 
-async def _find_first(page, candidates: list[str]):
-    """Return first matching element and its selector."""
-    for sel in candidates:
+def _sanitize(text: str) -> str:
+    """Replace Unicode characters that break Windows cp1252 terminal."""
+    return (
+        text
+        .replace("\u2192", "->")   # right arrow
+        .replace("\u2190", "<-")   # left arrow
+        .replace("\u2194", "<->")  # left-right arrow
+        .replace("\u2013", "-")    # en dash
+        .replace("\u2014", "--")   # em dash
+        .replace("\u2018", "'")    # left single quote
+        .replace("\u2019", "'")    # right single quote
+        .replace("\u201c", '"')    # left double quote
+        .replace("\u201d", '"')    # right double quote
+        .replace("\u2026", "...")  # ellipsis
+        .replace("\u2022", "*")   # bullet
+        .replace("\u00b7", "*")   # middle dot
+        .replace("\u2713", "[x]") # check mark
+        .replace("\u2717", "[ ]") # ballot x
+    )
+
+
+# -- Skilljar quiz selectors (discovered from live DOM) -----------------------
+
+# Start / retake buttons
+START_SELECTORS = [
+    "button.sj-text-quiz-start",
+    "button:has-text('Start')",
+    "button:has-text('Retake')",
+    "button:has-text('Retry')",
+    "a:has-text('Take this again')",
+    "a:has-text('Retake')",
+    "a:has-text('Retry')",
+]
+
+# Question text
+QUESTION_TEXT_SEL = "#sj-quiz-question-text"
+
+# Question number (e.g. "Question 1 of 6")
+QUESTION_NUMBER_SEL = ".question-number"
+
+# Answer inputs
+RADIO_SEL = "input[name='answer']"
+CHECKBOX_SEL = "input[name='chosen_answers']"
+
+# Labels wrapping answers
+ANSWER_LABEL_SEL = ".form-answers label"
+
+# Next question button
+NEXT_Q_SELECTORS = [
+    "button.sj-text-quiz-next",
+    "button:has-text('Next Question')",
+    "button:has-text('Submit')",
+    "button:has-text('Finish')",
+]
+
+# Results page elements
+SCORE_SELECTORS = [
+    ".quiz-score",
+    ".score",
+    ".result-score",
+    ".sj-quiz-score",
+    ".grade",
+]
+
+
+async def _click_first(page: Page, selectors: list[str], timeout: int = 3000) -> bool:
+    """Click the first visible element matching any selector."""
+    for sel in selectors:
         try:
             el = await page.query_selector(sel)
             if el and await el.is_visible():
-                return el, sel
+                await el.click()
+                await page.wait_for_timeout(timeout)
+                return True
         except Exception:
             continue
-    return None, None
-
-
-async def _find_all_matching(page, candidates: list[str]):
-    """Return all elements matching the first working candidate selector."""
-    for sel in candidates:
-        try:
-            els = await page.query_selector_all(sel)
-            visible = []
-            for el in els:
-                try:
-                    if await el.is_visible():
-                        visible.append(el)
-                except Exception:
-                    visible.append(el)
-            if visible:
-                return visible, sel
-        except Exception:
-            continue
-    return [], None
-
-
-async def _click_start_quiz(page: Page) -> bool:
-    """Find and click the Start/Retake Quiz button."""
-    el, sel = await _find_first(page, QUIZ_START_BUTTON_CANDIDATES)
-    if el:
-        console.print(f"[dim]    Clicking start: {sel}[/dim]")
-        await el.click()
-        await page.wait_for_timeout(3000)
-        return True
     return False
 
 
-async def _extract_questions(page: Page) -> list[QuizQuestion]:
-    """Extract all quiz questions and their options from the page."""
-    questions: list[QuizQuestion] = []
+async def _extract_current_question(page: Page) -> QuizQuestion | None:
+    """Extract the currently displayed single question and its options."""
+    # Get question text
+    q_text_el = await page.query_selector(QUESTION_TEXT_SEL)
+    if not q_text_el:
+        # Fallback: look for .question-text
+        q_text_el = await page.query_selector(".question-text")
+    if not q_text_el:
+        return None
 
-    # Find question containers
-    q_elements, q_sel = await _find_all_matching(page, QUIZ_QUESTION_CANDIDATES)
+    q_text = _sanitize((await q_text_el.inner_text()).strip())
+    if not q_text:
+        return None
 
-    if not q_elements:
-        console.print("[yellow]    No question containers found, trying full-page extraction[/yellow]")
-        return await _extract_questions_fullpage(page)
+    # Get question number from "Question X of Y"
+    q_num = 1
+    total = 1
+    num_el = await page.query_selector(QUESTION_NUMBER_SEL)
+    if num_el:
+        num_text = (await num_el.inner_text()).strip()
+        m = re.search(r"(\d+)\s+of\s+(\d+)", num_text)
+        if m:
+            q_num = int(m.group(1))
+            total = int(m.group(2))
 
-    console.print(f"[dim]    Found {len(q_elements)} questions via {q_sel}[/dim]")
-
-    for i, q_el in enumerate(q_elements):
-        # Extract question text
-        q_text = ""
-        for text_sel in QUIZ_QUESTION_TEXT_CANDIDATES:
-            try:
-                text_el = await q_el.query_selector(text_sel)
-                if text_el:
-                    q_text = (await text_el.inner_text()).strip()
-                    if q_text:
-                        break
-            except Exception:
-                continue
-
-        if not q_text:
-            q_text = (await q_el.inner_text()).strip()
-            # Take first meaningful line as question
-            lines = [l.strip() for l in q_text.split("\n") if l.strip()]
-            q_text = lines[0] if lines else f"Question {i + 1}"
-
-        # Extract options
-        options: list[str] = []
-        option_els, _ = await _find_all_matching(q_el, QUIZ_OPTION_CANDIDATES)
-        for opt_el in option_els:
-            opt_text = (await opt_el.inner_text()).strip()
-            # Clean up option text (remove leading A), B), etc.)
-            opt_text = re.sub(r"^[A-Z][.)]\s*", "", opt_text)
-            if opt_text and opt_text != q_text:
-                options.append(opt_text)
-
-        questions.append(
-            QuizQuestion(number=i + 1, text=q_text, options=options)
-        )
-
-    return questions
-
-
-async def _extract_questions_fullpage(page: Page) -> list[QuizQuestion]:
-    """Fallback: extract questions from full page text structure."""
-    # Get all text content and try to parse question/answer patterns
-    body = await page.inner_text("body")
-    questions = []
-    # Look for numbered patterns like "1. Question text" or "Question 1:"
-    q_pattern = re.compile(r"(?:^|\n)\s*(?:Question\s+)?(\d+)[.):]\s*(.+?)(?=\n)", re.MULTILINE)
-    for match in q_pattern.finditer(body):
-        num = int(match.group(1))
-        text = match.group(2).strip()
+    # Get answer options from labels
+    options: list[str] = []
+    labels = await page.query_selector_all(ANSWER_LABEL_SEL)
+    for label in labels:
+        text = _sanitize((await label.inner_text()).strip())
         if text:
-            questions.append(QuizQuestion(number=num, text=text, options=[]))
+            options.append(text)
 
-    return questions
+    return QuizQuestion(number=q_num, text=q_text, options=options)
 
 
-async def _select_answer(page: Page, question_el, answer_text: str) -> bool:
-    """Select a radio button corresponding to the answer text."""
-    # Find all label/option elements
-    option_els, _ = await _find_all_matching(question_el, QUIZ_OPTION_CANDIDATES)
-
-    for opt_el in option_els:
-        opt_text = (await opt_el.inner_text()).strip()
-        cleaned = re.sub(r"^[A-Z][.)]\s*", "", opt_text)
-        if cleaned == answer_text or answer_text in opt_text:
-            # Try clicking the radio input inside the option
-            radio = await opt_el.query_selector("input[type='radio'], input[type='checkbox']")
+async def _select_answer_on_page(page: Page, answer_text: str) -> bool:
+    """Select the radio/checkbox matching the answer text."""
+    labels = await page.query_selector_all(ANSWER_LABEL_SEL)
+    for label in labels:
+        text = _sanitize((await label.inner_text()).strip())
+        if text == answer_text or answer_text in text or text in answer_text:
+            # Click the input inside the label
+            radio = await label.query_selector("input[type='radio'], input[type='checkbox']")
             if radio:
                 await radio.click()
                 return True
-            # Fallback: click the label/option element itself
-            await opt_el.click()
-            return True
-
-    # Last resort: try clicking by text match
-    try:
-        label = await page.query_selector(f"label:has-text('{answer_text[:50]}')")
-        if label:
+            # Fallback: click the label itself
             await label.click()
             return True
-    except Exception:
-        pass
+
+    # Last resort: try partial text match
+    for label in labels:
+        text = _sanitize((await label.inner_text()).strip())
+        # Check if most of the answer text matches
+        if len(answer_text) > 10 and answer_text[:30] in text:
+            radio = await label.query_selector("input[type='radio'], input[type='checkbox']")
+            if radio:
+                await radio.click()
+                return True
+            await label.click()
+            return True
 
     return False
 
 
-async def _submit_quiz(page: Page) -> bool:
-    """Click the submit button."""
-    el, sel = await _find_first(page, QUIZ_SUBMIT_CANDIDATES)
-    if el:
-        console.print(f"[dim]    Submitting quiz via {sel}[/dim]")
-        await el.click()
-        await page.wait_for_timeout(5000)
-        return True
-    return False
-
-
-async def _parse_results(page: Page) -> QuizResult:
-    """Parse quiz results after submission."""
-    # Try to find score
-    score = 0.0
-    for sel in QUIZ_SCORE_CANDIDATES:
+async def _parse_score(page: Page) -> float:
+    """Extract the score percentage from the results page."""
+    # Check dedicated score elements
+    for sel in SCORE_SELECTORS:
         try:
             el = await page.query_selector(sel)
             if el:
                 text = await el.inner_text()
-                # Extract percentage from text like "Score: 80%" or "4/5"
-                pct_match = re.search(r"(\d+)%", text)
-                if pct_match:
-                    score = float(pct_match.group(1))
-                    break
-                frac_match = re.search(r"(\d+)\s*/\s*(\d+)", text)
-                if frac_match:
-                    num, den = int(frac_match.group(1)), int(frac_match.group(2))
-                    if den > 0:
-                        score = (num / den) * 100
-                    break
+                pct = re.search(r"(\d+)%", text)
+                if pct:
+                    return float(pct.group(1))
+                frac = re.search(r"(\d+)\s*/\s*(\d+)", text)
+                if frac:
+                    n, d = int(frac.group(1)), int(frac.group(2))
+                    if d > 0:
+                        return (n / d) * 100
         except Exception:
             continue
 
-    # If no explicit score element, look in page text
-    if score == 0:
-        try:
-            body = await page.inner_text("body")
-            pct_match = re.search(r"(\d+)%", body)
-            if pct_match:
-                score = float(pct_match.group(1))
-        except Exception:
-            pass
+    # Fallback: search quiz container text for percentage or fraction
+    quiz_el = await page.query_selector("#quiz-container")
+    if quiz_el:
+        text = await quiz_el.inner_text()
+        pct = re.search(r"(\d+)%", text)
+        if pct:
+            return float(pct.group(1))
+        frac = re.search(r"(\d+)\s*/\s*(\d+)", text)
+        if frac:
+            n, d = int(frac.group(1)), int(frac.group(2))
+            if d > 0:
+                return (n / d) * 100
 
-    passed = score >= TARGET_SCORE
-    return QuizResult(score_percent=score, passed=passed)
+    # Fallback: search full page
+    try:
+        body = await page.inner_text("body")
+        # Look for "Score: 83%" or "5/6" or "83%" patterns
+        pct = re.search(r"(\d+)\s*%", body)
+        if pct:
+            val = float(pct.group(1))
+            # Sanity check: should be 0-100 and appear in quiz context
+            if 0 < val <= 100:
+                return val
+    except Exception:
+        pass
+
+    return 0.0
 
 
 async def handle_quiz_lesson(
@@ -218,79 +217,115 @@ async def handle_quiz_lesson(
     validator: ValidatorClient | None = None,
     course_context: str = "Anthropic Academy",
 ) -> QuizResult:
-    """Full quiz pipeline: start -> extract -> solve -> validate -> submit -> check.
+    """Full quiz pipeline using Skilljar's one-question-at-a-time flow.
 
-    Retries up to MAX_QUIZ_RETRIES times if score < TARGET_SCORE.
+    Flow: Start -> Q1 -> answer -> Next -> Q2 -> ... -> Results
+    Retries up to MAX_QUIZ_RETRIES if score < TARGET_SCORE.
     """
     console.print("[bold cyan]    Handling quiz lesson...[/bold cyan]")
-    wrong_answers_map: dict[int, list[str]] = {}  # question_num -> wrong answers
+    wrong_answers_map: dict[int, list[str]] = {}
 
     for attempt in range(1, MAX_QUIZ_RETRIES + 1):
         console.print(f"[cyan]    Quiz attempt {attempt}/{MAX_QUIZ_RETRIES}[/cyan]")
+        questions_answered: list[QuizQuestion] = []
 
-        # Start or retake quiz
-        await _click_start_quiz(page)
+        # On retries, reload the page to get a clean quiz state
+        if attempt > 1:
+            await page.reload(wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
+
+        # Click Start or Retake
+        started = await _click_first(page, START_SELECTORS, timeout=3000)
+        if not started:
+            console.print("[yellow]    No Start/Retake button found[/yellow]")
+            # Might already be on a question page
+            pass
+
         await page.wait_for_timeout(2000)
 
-        # Extract questions
-        questions = await _extract_questions(page)
-        if not questions:
-            console.print("[red]    No questions found![/red]")
-            return QuizResult(score_percent=0, passed=False, attempt_number=attempt)
+        # Answer questions one at a time
+        max_questions = 50  # safety limit
+        for _ in range(max_questions):
+            question = await _extract_current_question(page)
+            if not question:
+                # No question visible -- might be on results page
+                break
 
-        console.print(f"[cyan]    Found {len(questions)} questions[/cyan]")
-
-        # Find question elements for interaction
-        q_elements, _ = await _find_all_matching(page, QUIZ_QUESTION_CANDIDATES)
-
-        # Answer each question
-        for i, q in enumerate(questions):
-            if not q.options:
-                console.print(f"[yellow]    Q{q.number}: No options found, skipping[/yellow]")
+            if not question.options:
+                console.print(f"[yellow]    Q{question.number}: No options found, advancing[/yellow]")
+                await _click_first(page, NEXT_Q_SELECTORS, timeout=2000)
                 continue
 
-            wrong = wrong_answers_map.get(q.number, [])
-            answer = ask_claude(q, wrong_answers=wrong if wrong else None)
+            # Ask Claude for the answer
+            # On retries, use higher temperature for variation
+            temp = 0.0 if attempt == 1 else 0.4
+            wrong = wrong_answers_map.get(question.number, [])
+            answer = ask_claude(
+                question,
+                wrong_answers=wrong if wrong else None,
+                temperature=temp,
+                course_context=course_context,
+            )
 
-            # MCP validation gate -- verify answer before selecting
+            # Optional MCP validation
             if validator:
                 answer = await _validate_with_mcp(
-                    validator, q, answer, course_context
+                    validator, question, answer, course_context
                 )
 
-            q.selected_answer = answer
+            question.selected_answer = answer
+            console.print(f"[dim]    Q{question.number}: {question.text[:60]}[/dim]")
+            console.print(f"[dim]    -> {answer[:60]}[/dim]")
 
-            console.print(f"[dim]    Q{q.number}: {q.text[:60]}...[/dim]")
-            console.print(f"[dim]    -> Answer: {answer[:60]}[/dim]")
+            # Simulate reading time (10-20 seconds per question)
+            import random
+            delay = random.uniform(10, 20)
+            console.print(f"[dim]    (waiting {delay:.0f}s)[/dim]")
+            await page.wait_for_timeout(int(delay * 1000))
 
             # Select the answer in the browser
-            if i < len(q_elements):
-                selected = await _select_answer(page, q_elements[i], answer)
-                if not selected:
-                    console.print(f"[yellow]    Could not select answer for Q{q.number}[/yellow]")
+            selected = await _select_answer_on_page(page, answer)
+            if not selected:
+                console.print(f"[yellow]    Could not select answer for Q{question.number}[/yellow]")
 
-        # Submit
-        submitted = await _submit_quiz(page)
-        if not submitted:
-            console.print("[yellow]    Could not find submit button[/yellow]")
+            questions_answered.append(question)
 
-        # Parse results
-        result = await _parse_results(page)
-        result.questions = questions
-        result.attempt_number = attempt
+            # Small pause before clicking Next
+            await page.wait_for_timeout(random.randint(2000, 4000))
 
-        console.print(
-            f"[{'green' if result.passed else 'yellow'}]"
-            f"    Score: {result.score_percent:.0f}% "
-            f"({'PASS' if result.passed else 'RETRY'})"
-            f"[/{'green' if result.passed else 'yellow'}]"
+            # Click Next Question (or Submit/Finish for last question)
+            clicked = await _click_first(page, NEXT_Q_SELECTORS, timeout=3000)
+            if not clicked:
+                console.print("[dim]    No Next button -- may be end of quiz[/dim]")
+                break
+
+        # We should now be on the results page
+        await page.wait_for_timeout(3000)
+
+        # Parse score
+        score = await _parse_score(page)
+        passed = score >= TARGET_SCORE
+
+        result = QuizResult(
+            score_percent=score,
+            passed=passed,
+            questions=questions_answered,
+            attempt_number=attempt,
         )
 
-        if result.passed:
+        status_color = "green" if passed else "yellow"
+        console.print(
+            f"[{status_color}]    Score: {score:.0f}% "
+            f"({'PASS' if passed else 'RETRY'})"
+            f"[/{status_color}]"
+        )
+
+        if passed:
             return result
 
-        # Track wrong answers for retry by inspecting result DOM
-        await _tag_wrong_answers(page, questions, q_elements, wrong_answers_map)
+        # On failure, conservatively record all answers as potentially wrong
+        # (Skilljar results page may or may not show which were wrong)
+        await _record_wrong_answers(page, questions_answered, wrong_answers_map)
 
         await page.wait_for_timeout(2000)
 
@@ -306,10 +341,7 @@ async def _validate_with_mcp(
     proposed_answer: str,
     course_context: str,
 ) -> str:
-    """Run the proposed answer through the MCP validator.
-
-    Returns the final answer -- either the original or the reviewer's alternative.
-    """
+    """Run the proposed answer through the MCP validator."""
     try:
         result = await validator.validate(
             question=question.text,
@@ -344,60 +376,37 @@ async def _validate_with_mcp(
         return proposed_answer
 
 
-async def _tag_wrong_answers(
+async def _record_wrong_answers(
     page: Page,
     questions: list[QuizQuestion],
-    q_elements: list,
     wrong_answers_map: dict[int, list[str]],
 ):
-    """After submission, inspect the DOM to find which answers were wrong.
+    """After quiz results, try to identify which specific answers were wrong.
 
-    If the platform marks correct/incorrect answers, we only record the
-    genuinely wrong ones. Otherwise, we conservatively record all selected
-    answers (the retry prompt will exclude them).
+    If we can't identify individual wrong answers (Skilljar may not show
+    detailed results), we skip recording to avoid poisoning correct answers.
+    The retry relies on temperature variation instead.
     """
-    found_any_marker = False
+    # Try clicking "Show Answers" to get detailed results
+    show_btn = await page.query_selector("button:has-text('Show Answers')")
+    if show_btn:
+        try:
+            await show_btn.click()
+            await page.wait_for_timeout(3000)
 
-    for i, q in enumerate(questions):
-        if i >= len(q_elements):
-            break
+            # Look for incorrect markers in the results
+            incorrect_els = await page.query_selector_all(
+                ".incorrect, .is-incorrect, .wrong, [data-correct='false'], "
+                ".answer-incorrect, .sj-incorrect"
+            )
+            if incorrect_els:
+                console.print(f"[dim]    Found {len(incorrect_els)} incorrect markers[/dim]")
+                # TODO: map these back to specific questions
+            else:
+                console.print("[dim]    No specific wrong-answer markers found[/dim]")
+        except Exception:
+            pass
 
-        q_el = q_elements[i]
-        is_wrong = False
-
-        # Check for explicit incorrect markers on the question container
-        for indicator in QUIZ_INCORRECT_INDICATOR:
-            try:
-                marker = await q_el.query_selector(indicator)
-                if marker:
-                    is_wrong = True
-                    found_any_marker = True
-                    break
-            except Exception:
-                continue
-
-        # Also check for correct markers -- if present and NOT found, it's wrong
-        if not found_any_marker:
-            for indicator in QUIZ_CORRECT_INDICATOR:
-                try:
-                    marker = await q_el.query_selector(indicator)
-                    if marker:
-                        q.is_correct = True
-                        found_any_marker = True
-                        break
-                except Exception:
-                    continue
-            if found_any_marker and q.is_correct is None:
-                is_wrong = True
-
-        if is_wrong and q.selected_answer:
-            q.is_correct = False
-            wrong_answers_map.setdefault(q.number, []).append(q.selected_answer)
-            console.print(f"[dim]    Q{q.number}: '{q.selected_answer}' was wrong[/dim]")
-
-    # If no DOM markers were found at all, conservatively mark all as potentially wrong
-    if not found_any_marker:
-        console.print("[dim]    No correct/incorrect markers found -- recording all answers for retry[/dim]")
-        for q in questions:
-            if q.selected_answer:
-                wrong_answers_map.setdefault(q.number, []).append(q.selected_answer)
+    # Without clear per-question markers, don't exclude anything.
+    # Retry relies on temperature variation to explore alternatives.
+    console.print("[dim]    Using temperature variation for retry (no answer exclusions)[/dim]")
